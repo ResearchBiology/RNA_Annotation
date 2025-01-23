@@ -91,6 +91,9 @@ RNAProcessor is a modular tool designed to process RNA sequences through multipl
 - Statistics generation for quality control
 
 ### File Management
+- Make sure .fq.gz file or other file has been cleaned as follows:
+   - Line 1 / Info
+   - Line 2 / Sequence
 - Organized directory structure
 - Consistent file naming conventions
 - Intermediate results preserved for analysis
