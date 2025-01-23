@@ -96,3 +96,5 @@ RNAProcessor is a modular tool designed to process RNA sequences through multipl
 - Intermediate results preserved for analysis
 
 ## Installation
+- Using Python 3.12 version
+- pip install -r requirements.txt
