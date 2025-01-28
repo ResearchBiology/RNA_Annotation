@@ -2,11 +2,68 @@
 
 A comprehensive Python pipeline for RNA sequence processing and BLAST analysis.
 
+## Table of Contents
+- [Overview](#overview)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Pipeline Steps](#pipeline-steps)
+- [Usage](#usage)
+- [Implementation Details](#implementation-details)
+- [Contributing](#contributing)
+
 ## Overview
 
 RNAProcessor is a modular tool designed to process RNA sequences through multiple filtering and analysis steps. The pipeline includes duplicate removal, adapter trimming, quality filtering, pair matching, alignment analysis, and BLAST searching.
 
-## Pipeline Steps and Logic
+## Installation
+
+### Prerequisites
+- Python 3.8 or higher
+- pip package manager
+
+### Steps
+1. Clone the repository:
+```bash
+git clone https://github.com/Cheatallin/rnaprocessor.git
+cd rnaprocessor
+```
+
+2. Install the package and its dependencies:
+```bash
+pip install .
+```
+
+Required dependencies will be automatically installed:
+- biopython >= 1.80
+- numpy >= 1.21.0
+- pandas >= 1.3.0
+- matplotlib >= 3.4.0
+- seaborn >= 0.11.0
+
+## Quick Start
+
+1. Prepare your input files:
+   - Place your `.fq` files in an input directory
+   - Each file should be properly formatted with:
+     - Line 1: Sequence information
+     - Line 2: Sequence data
+
+2. Run the pipeline:
+```bash
+rnaprocessor --input-dir path/to/input/files --output-dir path/to/output
+```
+
+The pipeline will automatically:
+1. Remove duplicates (initial)
+2. Remove adapters
+3. Filter by quality
+4. Match sequence pairs
+5. Remove duplicates (secondary)
+6. Analyze alignments
+7. Perform BLAST search
+8. Generate PDF reports
+
+## Pipeline Steps
 
 1. **Initial Duplicate Removal** (`DuplicateRemover`)
    - **Purpose**: Remove redundant sequence pairs to reduce computational load
@@ -78,26 +135,70 @@ RNAProcessor is a modular tool designed to process RNA sequences through multipl
        - Alignment details
        - Quality metrics
 
+## Usage
+
+### Command Line Arguments
+
+```bash
+rnaprocessor [--input-dir INPUT_DIR] [--output-dir OUTPUT_DIR] [--cores CORES]
+```
+
+#### Arguments:
+- `--input-dir`: Directory containing input .fq files (default: "label_cleaned_files")
+- `--output-dir`: Base directory for output files (default: "results")
+- `--cores`: Number of CPU cores to use (default: 22)
+
+### Output Directory Structure
+
+The pipeline creates the following directory structure for outputs:
+```
+output_dir/
+├── duplicates/        # Initial duplicate removal results
+├── adapters/         # Adapter removal results
+├── quality/          # Quality filtering results
+├── paired/          # Pair matching results
+├── new_duplicate/   # Secondary duplicate removal results
+├── alignment/       # Alignment analysis results
+├── blast/           # BLAST search results
+└── reports/         # PDF reports
+```
+
+### Progress Tracking
+
+The pipeline provides detailed logging of each step, including:
+- Number of files processed
+- Success/failure status
+- Statistics for each processing step
+- Final summary of the entire pipeline
+
+### Error Handling
+
+- The pipeline includes comprehensive error handling
+- Each step is logged with detailed error messages
+- Processing continues even if individual files fail
+- Final summary includes success/failure counts
+
 ## Implementation Details
 
 ### Parallel Processing
 - Uses ProcessPoolExecutor for CPU-intensive tasks
-- Configurable core count (default: 22)
-- Chunk-based processing for memory efficiency
-
-### Error Handling
-- Comprehensive logging at each step
-- Detailed error messages and stack traces
-- Statistics generation for quality control
+- Default: 22 cores (configurable via --cores)
+- Automatically adjusts to available CPU cores
 
 ### File Management
-- Make sure .fq.gz file or other file has been cleaned as follows:
-   - Line 1 / Info
-   - Line 2 / Sequence
-- Organized directory structure
-- Consistent file naming conventions
-- Intermediate results preserved for analysis
+- Input files must be in .fq format
+- Organized directory structure for each processing step
+- Intermediate results are preserved for analysis
+- Consistent file naming conventions maintained throughout the pipeline
 
-## Installation
-- Using Python 3.12 version
-- pip install -r requirements.txt
+## Contributing
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
