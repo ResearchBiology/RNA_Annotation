@@ -61,7 +61,6 @@ The pipeline will automatically:
 5. Remove duplicates (secondary)
 6. Analyze alignments
 7. Perform BLAST search
-8. Generate PDF reports
 
 ## Pipeline Steps
 
@@ -130,10 +129,6 @@ The pipeline will automatically:
        - E-values
        - Identity percentages
        - Gap statistics
-     - Generates formatted PDF reports with:
-       - Hit summaries
-       - Alignment details
-       - Quality metrics
 
 ## Usage
 
@@ -158,9 +153,8 @@ output_dir/
 ├── quality/          # Quality filtering results
 ├── paired/          # Pair matching results
 ├── new_duplicate/   # Secondary duplicate removal results
-├── alignment/       # Alignment analysis results
-├── blast/           # BLAST search results
-└── reports/         # PDF reports
+├── alignment/       # Alignment analysis results         
+└── blast/         # BLAST search results
 ```
 
 ### Progress Tracking
