@@ -1,73 +1,66 @@
 import logging
 from pathlib import Path
-import numpy as np
-import matplotlib.pyplot as plt
-from collections import defaultdict
+import statistics
+import concurrent.futures
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
 class QualityFilter:
-    """Filter sequences based on quality scores using FastQC-style analysis"""
+    """Class for filtering sequences based on quality scores"""
     
-    def __init__(self, output_dir="results/quality", window_size=15, min_quality=30):
+    def __init__(self, output_dir="quality_filtered", min_quality=15, window_size=30, num_cores=6):
         """
         Initialize QualityFilter
         
         Args:
             output_dir (str): Directory to store filtered sequences
-            window_size (int): Size of sliding window for quality calculation
-            min_quality (int): Minimum quality score (Q30 by default)
+            min_quality (int): Minimum average quality score
+            window_size (int): Window size for quality calculation
+            num_cores (int): Number of CPU cores to use
         """
         self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.window_size = window_size
         self.min_quality = min_quality
-        self.plots_dir = self.output_dir / "plots"
-        self.plots_dir.mkdir(exist_ok=True)
+        self.window_size = window_size
+        self.num_cores = num_cores
+        self.output_dir.mkdir(parents=True, exist_ok=True)
     
-    def _calculate_quality_scores(self, quality_string):
-        """Convert ASCII quality string to numeric scores"""
-        return [ord(char) - 33 for char in quality_string]  # Phred+33 encoding
-    
-    def _check_window_quality(self, quality_scores):
-        """Check if any window falls below minimum quality"""
-        for i in range(len(quality_scores) - self.window_size + 1):
+    def _check_quality(self, quality_str):
+        """
+        Check if sequence passes quality threshold using sliding window
+        
+        Args:
+            quality_str (str): Quality string in ASCII format
+            
+        Returns:
+            bool: True if sequence passes quality check, False otherwise
+        """
+        # Convert ASCII to quality scores (Phred+33)
+        quality_scores = [ord(c) - 33 for c in quality_str]
+        
+        # Calculate average quality in sliding windows
+        for i in range(0, len(quality_scores) - self.window_size + 1):
             window = quality_scores[i:i + self.window_size]
-            if np.mean(window) < self.min_quality:
+            if statistics.mean(window) < self.min_quality:
                 return False
         return True
     
-    def _generate_quality_plot(self, position_qualities, output_path):
-        """Generate quality score distribution plot"""
-        plt.figure(figsize=(12, 6))
+    def _process_chunk(self, chunk_data):
+        """Process a chunk of sequences"""
+        filtered_sequences = []
+        stats = {"total": 0, "passed": 0}
         
-        # Calculate statistics for each position
-        positions = sorted(position_qualities.keys())
-        medians = [np.median(position_qualities[p]) for p in positions]
-        q1 = [np.percentile(position_qualities[p], 25) for p in positions]
-        q3 = [np.percentile(position_qualities[p], 75) for p in positions]
+        for header, sequence, plus_line, quality in chunk_data:
+            stats["total"] += 1
+            if self._check_quality(quality):
+                filtered_sequences.append((header, sequence, plus_line, quality))
+                stats["passed"] += 1
         
-        # Plot quality distribution
-        plt.fill_between(positions, q1, q3, alpha=0.2, color='blue')
-        plt.plot(positions, medians, color='blue', label='Median Score')
-        
-        # Add threshold line
-        plt.axhline(y=self.min_quality, color='red', linestyle='--', 
-                   label=f'Q{self.min_quality} Threshold')
-        
-        plt.title('Quality Scores Distribution Across All Positions')
-        plt.xlabel('Position in Read (bp)')
-        plt.ylabel('Quality Score')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        # Save plot
-        plt.savefig(output_path)
-        plt.close()
+        return filtered_sequences, stats
     
     def filter_sequences(self, input_file):
         """
-        Filter sequences based on quality scores
+        Filter sequences based on quality scores using parallel processing
         
         Args:
             input_file (str): Path to input file
@@ -75,83 +68,76 @@ class QualityFilter:
         Returns:
             str: Path to filtered file
         """
+        input_path = Path(input_file)
+        output_path = self.output_dir / f"{input_path.name}"
+        stats_path = self.output_dir / f"{input_path.stem}_quality_stats.txt"
+        
         try:
-            input_path = Path(input_file)
-            output_path = self.output_dir / f"quality_filtered_{input_path.name}"
-            stats_path = self.output_dir / f"{input_path.stem}_quality_stats.txt"
-            plot_path = self.plots_dir / f"{input_path.stem}_quality_plot.png"
-            
-            # Track statistics
-            total_sequences = 0
-            passed_sequences = 0
-            position_qualities = defaultdict(list)
-            
             logger.info(f"Processing file: {input_path.name}")
             
-            # Process file
-            with open(input_path, 'r') as infile, open(output_path, 'w') as outfile:
+            # Read sequences in chunks
+            sequences = []
+            total_sequences = 0
+            
+            with open(input_file) as f:
                 while True:
-                    # Read sequence entry (2 lines)
-                    info_line = infile.readline().strip()
-                    seq_line = infile.readline().strip()
-                    
-                    # Check for end of file
-                    if not info_line or not seq_line:
+                    header = f.readline().rstrip('\n')
+                    if not header:
                         break
+                    sequence = f.readline().rstrip('\n')
+                    plus_line = f.readline().rstrip('\n')
+                    quality = f.readline().rstrip('\n')
                     
-                    total_sequences += 1
-                    
-                    # Convert quality scores
-                    quality_scores = self._calculate_quality_scores(seq_line)
-                    
-                    # Track qualities for plotting
-                    for pos, score in enumerate(quality_scores):
-                        position_qualities[pos].append(score)
-                    
-                    # Check quality using sliding window
-                    if self._check_window_quality(quality_scores):
-                        outfile.write(f"{info_line}\n{seq_line}\n")
-                        passed_sequences += 1
-                    
-                    # Log progress
-                    if total_sequences % 100000 == 0:
-                        logger.info(f"Processed {total_sequences} sequences")
+                    if header and sequence:
+                        sequences.append((header, sequence, plus_line, quality))
+                        total_sequences += 1
             
-            # Generate quality plot
-            self._generate_quality_plot(position_qualities, plot_path)
+            # Process in parallel
+            chunk_size = max(1000, total_sequences // (self.num_cores * 10))
+            chunks = [sequences[i:i + chunk_size] for i in range(0, len(sequences), chunk_size)]
             
-            # Calculate statistics
-            failed_sequences = total_sequences - passed_sequences
+            filtered_sequences = []
+            total_stats = {"total": 0, "passed": 0}
+            
+            with concurrent.futures.ProcessPoolExecutor(max_workers=self.num_cores) as executor:
+                futures = []
+                for chunk in chunks:
+                    futures.append(executor.submit(self._process_chunk, chunk))
+                
+                for future in tqdm(concurrent.futures.as_completed(futures), 
+                                 total=len(futures),
+                                 desc="Processing chunks"):
+                    chunk_sequences, chunk_stats = future.result()
+                    filtered_sequences.extend(chunk_sequences)
+                    # Update total stats
+                    for key in total_stats:
+                        total_stats[key] += chunk_stats[key]
+            
+            # Write filtered sequences
+            with open(output_path, 'w') as f:
+                for header, sequence, plus_line, quality in filtered_sequences:
+                    f.write(f"{header}\n{sequence}\n{plus_line}\n{quality}\n")
             
             # Save statistics
             with open(stats_path, 'w') as f:
-                f.write("=== Quality Filtering Statistics ===\n\n")
+                f.write("=== Quality Filter Statistics ===\n\n")
                 f.write(f"Input file: {input_path.name}\n")
-                f.write(f"Quality threshold: Q{self.min_quality}\n")
-                f.write(f"Window size: {self.window_size}\n\n")
+                f.write(f"Quality parameters:\n")
+                f.write(f"- Minimum quality score: {self.min_quality}\n")
+                f.write(f"- Window size: {self.window_size}\n\n")
                 f.write("Summary:\n")
-                f.write(f"Total sequences: {total_sequences}\n")
-                f.write(f"Sequences passed: {passed_sequences} ({passed_sequences/total_sequences*100:.2f}%)\n")
-                f.write(f"Sequences failed: {failed_sequences} ({failed_sequences/total_sequences*100:.2f}%)\n")
-                
-                # Add quality score distribution
-                f.write("\nQuality Score Distribution:\n")
-                for pos in sorted(position_qualities.keys()):
-                    scores = position_qualities[pos]
-                    f.write(f"Position {pos}: Mean={np.mean(scores):.2f}, "
-                           f"Median={np.median(scores):.2f}, "
-                           f"Min={min(scores)}, Max={max(scores)}\n")
+                f.write(f"Total sequences processed: {total_stats['total']}\n")
+                f.write(f"Sequences passed: {total_stats['passed']} ({total_stats['passed']/total_stats['total']*100:.2f}%)\n")
+                f.write(f"Sequences filtered: {total_stats['total'] - total_stats['passed']} ({(total_stats['total'] - total_stats['passed'])/total_stats['total']*100:.2f}%)\n")
             
             logger.info(f"\nQuality filtering completed:")
-            logger.info(f"- Total sequences: {total_sequences}")
-            logger.info(f"- Sequences passed: {passed_sequences}")
-            logger.info(f"- Sequences failed: {failed_sequences}")
+            logger.info(f"- Total sequences: {total_stats['total']}")
+            logger.info(f"- Sequences passed: {total_stats['passed']}")
             logger.info(f"- Results saved to: {output_path}")
             logger.info(f"- Statistics saved to: {stats_path}")
-            logger.info(f"- Quality plot saved to: {plot_path}")
             
             return str(output_path)
             
         except Exception as e:
             logger.error(f"Error processing file {input_file}: {str(e)}")
-            raise 
+            raise

@@ -1,36 +1,136 @@
 import argparse
 import logging
+import shutil
 from pathlib import Path
-import sys
-import multiprocessing
-from concurrent.futures import ProcessPoolExecutor
+from new_rnaprocessor.src.sequence_cleaner import SequenceCleaner
+from new_rnaprocessor.src.adapter_remover import AdapterRemover
+from new_rnaprocessor.src.quality_filter import QualityFilter
+from new_rnaprocessor.src.pair_filter import PairFilter
+from new_rnaprocessor.src.alignment_analyzer import AlignmentAnalyzer
+from new_rnaprocessor.src.blast_searcher import BlastSearcher
 
-from .src.duplicate_remover import DuplicateRemover
-from .src.adapter_remover import AdapterRemover
-from .src.quality_filter import QualityFilter
-from .src.pair_matcher import PairMatcher
-from .src.alignment_analyzer import AlignmentAnalyzer
-from .src.blast_searcher import BlastSearcher
-from .src.pdf_generator import BlastPDFGenerator
-
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-def get_input_files(input_dir="label_cleaned_files"):
-    """Get all .fq files from input directory"""
-    input_path = Path(input_dir)
-    if not input_path.exists():
-        raise ValueError(f"Input directory not found: {input_dir}")
+def setup_directories(base_output_dir):
+    """Setup output directories and return paths"""
+    base_dir = Path(base_output_dir)
     
-    files = list(input_path.glob("*.fq"))
-    if not files:
-        raise ValueError(f"No .fq files found in {input_dir}")
+    # Only create directories we want to keep outputs from
+    final_dirs = {
+        'cleaned': base_dir / 'final_cleaned',
+        'aligned': base_dir / 'alignment_ready',
+        'blast': base_dir / 'blast_results'
+    }
     
-    return files
+    # Create final output directories
+    for dir_path in final_dirs.values():
+        dir_path.mkdir(parents=True, exist_ok=True)
+    
+    # Create temp directory for intermediate files
+    temp_dir = base_dir / 'temp'
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    
+    return final_dirs, temp_dir
+
+def cleanup_temp_files(temp_dir):
+    """Remove temporary directory and its contents"""
+    try:
+        shutil.rmtree(temp_dir)
+        logger.info("Cleaned up temporary files")
+    except Exception as e:
+        logger.warning(f"Error cleaning up temporary files: {str(e)}")
+
+def process_files(input_dir, output_dir, email=None):
+    """Process all input files through the RNA processing pipeline"""
+    try:
+        # Setup directories
+        final_dirs, temp_dir = setup_directories(output_dir)
+        
+        # Initialize processors
+        cleaner = SequenceCleaner(output_dir=str(temp_dir / "cleaned"))
+        adapter_remover = AdapterRemover(output_dir=str(temp_dir / "adapter_removed"))
+        quality_filter = QualityFilter(output_dir=str(temp_dir / "quality_filtered"))
+        pair_filter = PairFilter(output_dir=str(temp_dir / "paired"))
+        final_cleaner = SequenceCleaner(output_dir=str(final_dirs['cleaned']))
+        alignment_analyzer = AlignmentAnalyzer(output_dir=str(final_dirs['aligned']))
+        
+        if email:
+            blast_searcher = BlastSearcher(
+                output_dir=str(final_dirs['blast']),
+                email=email
+            )
+        
+        # Process each pair of input files
+        input_path = Path(input_dir)
+        forward_files = sorted(input_path.glob("*_1.fq.gz"))
+        
+        for forward_file in forward_files:
+            base_name = forward_file.name[:-8]  # Remove _1.fq.gz
+            reverse_file = input_path / f"{base_name}_2.fq.gz"
+            
+            if not reverse_file.exists():
+                logger.warning(f"No matching reverse file for {forward_file.name}")
+                continue
+            
+            logger.info(f"\nProcessing pair: {forward_file.name} and {reverse_file.name}")
+            
+            try:
+                # Step 1: Initial cleaning
+                logger.info("\n=== Step 1: Initial Sequence Cleaning ===")
+                cleaned_forward = cleaner.process_file(str(forward_file))
+                cleaned_reverse = cleaner.process_file(str(reverse_file))
+                
+                # Step 2: Adapter removal
+                logger.info("\n=== Step 2: Adapter Removal ===")
+                adapter_removed_forward = adapter_remover.remove_adapters(cleaned_forward)
+                adapter_removed_reverse = adapter_remover.remove_adapters(cleaned_reverse)
+                
+                # Step 3: Quality filtering
+                logger.info("\n=== Step 3: Quality Filtering ===")
+                quality_filtered_forward = quality_filter.filter_sequences(adapter_removed_forward)
+                quality_filtered_reverse = quality_filter.filter_sequences(adapter_removed_reverse)
+                
+                # Step 4: Pair filtering
+                logger.info("\n=== Step 4: Pair Filtering ===")
+                paired_file, _ = pair_filter.combine_paired_files(
+                    quality_filtered_forward,
+                    quality_filtered_reverse
+                )
+                
+                # Step 5: Final cleaning (duplicate removal)
+                logger.info("\n=== Step 5: Final Cleaning ===")
+                final_cleaned = final_cleaner.process_file(paired_file)
+                
+                # Step 6: Alignment analysis
+                logger.info("\n=== Step 6: Alignment Analysis ===")
+                fasta_file, _ = alignment_analyzer.analyze_file(final_cleaned)
+                
+                # Step 7: BLAST search (if email provided)
+                if email and fasta_file:
+                    logger.info("\n=== Step 7: BLAST Search ===")
+                    blast_searcher.search(fasta_file)
+                
+            except Exception as e:
+                logger.error(f"Error processing {base_name}: {str(e)}")
+                continue
+        
+        # Cleanup temporary files
+        cleanup_temp_files(temp_dir)
+        
+        logger.info("\nPipeline completed successfully!")
+        logger.info(f"Final outputs can be found in:")
+        logger.info(f"- Cleaned sequences: {final_dirs['cleaned']}")
+        logger.info(f"- Alignment results: {final_dirs['aligned']}")
+        if email:
+            logger.info(f"- BLAST results: {final_dirs['blast']}")
+        
+    except Exception as e:
+        logger.error(f"Pipeline error: {str(e)}")
+        raise
 
 def main():
     parser = argparse.ArgumentParser(description="RNA Processing Pipeline")
@@ -38,129 +138,27 @@ def main():
     parser.add_argument(
         '--input-dir',
         type=str,
-        default="label_cleaned_files",
-        help='Directory containing input .fq files'
+        required=True,
+        help='Directory containing input .fq.gz files'
     )
     
     parser.add_argument(
         '--output-dir',
         type=str,
-        default="results",
-        help='Base directory for output files'
+        required=True,
+        help='Directory for output files'
     )
     
     parser.add_argument(
-        '--cores',
-        type=int,
-        default=22,
-        help='Number of CPU cores to use'
+        '--email',
+        type=str,
+        help='Email for NCBI BLAST (optional)'
     )
     
     args = parser.parse_args()
     
-    try:
-        # Set number of cores for multiprocessing
-        num_cores = min(args.cores, multiprocessing.cpu_count())
-        multiprocessing.set_start_method('spawn', force=True)
-        
-        logger.info(f"Starting RNA processing pipeline with {num_cores} cores")
-        logger.info("Pipeline steps: Initial Duplicate Removal -> Adapter Removal -> Quality Filtering -> "
-                   "Pair Matching -> Secondary Duplicate Removal -> Alignment Analysis -> BLAST Search")
-        
-        # Get input files
-        input_files = get_input_files(args.input_dir)
-        logger.info(f"Found {len(input_files)} input files to process")
-        
-        # 1. Initial Duplicate Removal
-        logger.info("\n=== Step 1: Initial Duplicate Removal ===")
-        duplicate_remover = DuplicateRemover(output_dir=f"{args.output_dir}/duplicates")
-        duplicate_files = []
-        for input_file in input_files:
-            result = duplicate_remover.remove_duplicates(input_file)
-            if result:
-                duplicate_files.append(result)
-        logger.info(f"Completed initial duplicate removal. Generated {len(duplicate_files)} files")
-        
-        # 2. Adapter Removal
-        logger.info("\n=== Step 2: Adapter Removal ===")
-        adapter_remover = AdapterRemover(output_dir=f"{args.output_dir}/adapters")
-        adapter_files = []
-        for dup_file in duplicate_files:
-            result = adapter_remover.remove_adapters(dup_file)
-            if result:
-                adapter_files.append(result)
-        logger.info(f"Completed adapter removal. Generated {len(adapter_files)} files")
-        
-        # 3. Quality Filtering
-        logger.info("\n=== Step 3: Quality Filtering ===")
-        quality_filter = QualityFilter(output_dir=f"{args.output_dir}/quality")
-        quality_files = []
-        for adapter_file in adapter_files:
-            result = quality_filter.filter_sequences(adapter_file)
-            if result:
-                quality_files.append(result)
-        logger.info(f"Completed quality filtering. Generated {len(quality_files)} files")
-        
-        # 4. Pair Matching
-        logger.info("\n=== Step 4: Pair Matching ===")
-        pair_matcher = PairMatcher(output_dir=f"{args.output_dir}/paired", num_cores=num_cores)
-        paired_files = pair_matcher.process_pairs(quality_files)
-        logger.info(f"Completed pair matching. Generated {len(paired_files)} paired files")
-        
-        # 5. Secondary Duplicate Removal
-        logger.info("\n=== Step 5: Secondary Duplicate Removal ===")
-        secondary_duplicate_remover = DuplicateRemover(output_dir=f"{args.output_dir}/new_duplicate")
-        final_files = []
-        for paired_file in paired_files:
-            result = secondary_duplicate_remover.remove_duplicates(paired_file)
-            if result:
-                final_files.append(result)
-        logger.info(f"Completed secondary duplicate removal. Generated {len(final_files)} files")
-        
-        # 6. Alignment Analysis
-        logger.info("\n=== Step 6: Alignment Analysis ===")
-        alignment_analyzer = AlignmentAnalyzer(
-            input_dir=f"{args.output_dir}/new_duplicate",
-            output_dir=f"{args.output_dir}/alignment",
-            num_cores=num_cores
-        )
-        alignment_files = alignment_analyzer.process_files()
-        logger.info(f"Completed alignment analysis. Generated {len(alignment_files)} files")
-        
-        # 7. BLAST Search and Report Generation
-        logger.info("\n=== Step 7: BLAST Search ===")
-        blast_searcher = BlastSearcher(
-            input_dir=f"{args.output_dir}/alignment",
-            output_dir=f"{args.output_dir}/blast"
-        )
-        blast_files = blast_searcher.process_files()
-        
-        if blast_files:
-            logger.info("Generating BLAST PDF report...")
-            pdf_generator = BlastPDFGenerator(
-                blast_dir=f"{args.output_dir}/blast",
-                output_dir=f"{args.output_dir}/reports"
-            )
-            pdf_report = pdf_generator.generate_report()
-            if pdf_report:
-                logger.info(f"PDF report generated: {pdf_report}")
-        
-        # Print final summary
-        logger.info("\n=== Pipeline Summary ===")
-        logger.info(f"Input files: {len(input_files)}")
-        logger.info(f"After initial duplicate removal: {len(duplicate_files)}")
-        logger.info(f"After adapter removal: {len(adapter_files)}")
-        logger.info(f"After quality filtering: {len(quality_files)}")
-        logger.info(f"After pair matching: {len(paired_files)}")
-        logger.info(f"After secondary duplicate removal: {len(final_files)}")
-        logger.info(f"Alignment files generated: {len(alignment_files)}")
-        logger.info(f"BLAST results generated: {len(blast_files) if blast_files else 0}")
-        
-        logger.info("\nPipeline completed successfully!")
-        
-    except Exception as e:
-        logger.error(f"Pipeline error: {str(e)}")
-        sys.exit(1)
+    # Run the pipeline
+    process_files(args.input_dir, args.output_dir, args.email)
 
 if __name__ == "__main__":
-    main() 
+    main()
