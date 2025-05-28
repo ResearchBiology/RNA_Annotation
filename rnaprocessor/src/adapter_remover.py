@@ -19,7 +19,7 @@ class AdapterRemover:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.num_cores = num_cores
-        self.identifier = "ATAGCGG"
+        self.identifier = "AGATCGG"
         self.check_region = 30  # Last 30bp to check for identifier
     
     def _process_sequence(self, header, sequence, plus_line, quality):
